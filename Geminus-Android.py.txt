@@ -1,0 +1,725 @@
+import subprocess
+import sys
+import json
+import re
+import platform
+import time
+import os
+import logging
+from datetime import datetime
+from typing import List, Dict, Any, Tuple, Optional
+import tempfile
+
+# --- Verificação de Dependências ---
+try:
+    from bs4 import BeautifulSoup
+except ImportError:
+    print("Erro: 'beautifulsoup4' não encontrado. Instale com: pip install beautifulsoup4")
+    sys.exit(1)
+
+try:
+    import requests
+except ImportError:
+    print("Erro: 'requests' não encontrado. Instale com: pip install requests")
+    sys.exit(1)
+
+try:
+    import google.generativeai as genai
+except ImportError:
+    print("Erro: 'google-generativeai' não encontrado. Instale com: pip install google-generativeai")
+    sys.exit(1)
+
+try:
+    import pyfiglet # NOVA DEPENDÊNCIA
+except ImportError:
+    print("Erro: 'pyfiglet' não encontrado. Instale com: pip install pyfiglet")
+    sys.exit(1)
+
+
+try:
+    # Colorama é útil para que as cores ANSI funcionem no Windows
+    import colorama
+    colorama.init()
+except ImportError:
+    if platform.system() == "Windows":
+        os.system("")
+# --- Fim da Verificação ---
+
+
+# --- Variáveis de Estado Global ---
+global_dossier: Dict[str, Any] = {}
+
+# --- Melhorias de UI: Cores ANSI ---
+class Colors:
+    RESET = '\033[0m'
+    BOLD = '\033[1m'
+    RED = '\033[91m'
+    GREEN = '\033[92m'
+    YELLOW = '\033[93m'
+    BLUE = '\033[94m'
+    CYAN = '\033[96m'
+    WHITE = '\033[97m'
+    GRAY = '\033[90m'
+
+def c_bold(s: str) -> str: return f"{Colors.BOLD}{s}{Colors.RESET}"
+def c_red(s: str) -> str: return f"{Colors.RED}{s}{Colors.RESET}"
+def c_green(s: str) -> str: return f"{Colors.GREEN}{s}{Colors.RESET}"
+def c_yellow(s: str) -> str: return f"{Colors.YELLOW}{s}{Colors.RESET}"
+def c_blue(s: str) -> str: return f"{Colors.BLUE}{s}{Colors.RESET}"
+def c_cyan(s: str) -> str: return f"{Colors.CYAN}{s}{Colors.RESET}"
+def c_gray(s: str) -> str: return f"{Colors.GRAY}{s}{Colors.RESET}"
+# --- Fim Cores ---
+
+
+# --- Configuração do Logging ---
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
+
+if logger.hasHandlers():
+    logger.handlers.clear()
+
+# 1. Handler do Console
+console_handler = logging.StreamHandler(sys.stdout)
+console_handler.setLevel(logging.INFO)
+console_handler.setFormatter(logging.Formatter('%(message)s'))
+logger.addHandler(console_handler)
+
+# 2. Handler do Arquivo
+try:
+    file_handler = logging.FileHandler("assistente.log", mode='w', encoding='utf-8')
+    file_handler.setLevel(logging.DEBUG)
+    file_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
+    logger.addHandler(file_handler)
+except PermissionError:
+    print(c_red("Aviso: Não foi possível escrever em 'assistente.log'. Logs de debug não serão salvos."))
+# --- Fim Logging ---
+
+
+# Configura a API do Gemini
+# Recomendado o Gemini 2.5 Flash
+API_KEY = "YOUR-API-KEY"
+genai.configure(api_key=API_KEY)
+model = genai.GenerativeModel('gemini-2.5-flash')
+
+# Detecta o SO
+OS_NAME = platform.system()
+IS_LINUX = OS_NAME == 'Linux'
+IS_ANDROID = 'ANDROID_ROOT' in os.environ or (IS_LINUX and 'aarch64' in platform.machine())
+
+# --- Funções de Geração de IA ---
+
+def generate_todo_list(user_request: str) -> List[str]:
+    """
+    Usa Gemini para gerar uma lista sequencial e formal de ações.
+    Injeta o Dossiê Global no prompt. Máximo 6 tarefas.
+    """
+    os_info = f"SO: {OS_NAME} ({'Android/Pydroid3' if IS_ANDROID else 'Desktop Linux'}). "
+    if IS_ANDROID:
+        os_info += "Use EXCLUSIVAMENTE 'Executar Comando Shell: pip install [pacote]' para dependências Python. Para consultas complexas (DNS, WHOIS, SSL), use 'Executar Script Python'."
+
+    global global_dossier
+    dossier_context = json.dumps(global_dossier, indent=2, ensure_ascii=False)
+    context_injection = f"\n# DADOS JÁ COLETADOS (DOSSIÊ GLOBAL):\n{dossier_context}\n"
+    if not global_dossier:
+        context_injection = ""
+
+    prompt = f"""
+    {os_info}
+    {context_injection}
+    Analise o pedido do usuário em português: "{user_request}"
+    
+    Crie uma lista sequencial e formal de tarefas (em português) que você executará para cumprir o pedido.
+    
+    ATENÇÃO: A lista deve conter um MÁXIMO de 6 TAREFAS. Use APENAS os seguintes tipos de ação:
+    
+    1. Executar Comando Shell: [comando, ex: pip install requests]
+    2. Realizar Varredura Web: [URL, ex: https://exemplo.com]
+    3. Executar Script Python: [Descrição do script] (USE ESTE PARA WHOIS, DNS, SSL)
+    4. Gerar Arquivo: [Nome do Arquivo, ex: dossie.txt]
+    5. Verificar Comando: [Nome do Comando, ex: git]
+    6. Análise Lógica: [Descrição da Análise]
+
+    Use os DADOS JÁ COLETADOS para EVITAR DUPLICAR o trabalho.
+
+    IMPORTANTE: Retorne APENAS a lista sequencial das tarefas, numeradas (1., 2., 3., etc.), sem texto introdutório.
+    """
+
+    try:
+        response = model.generate_content(prompt)
+        
+        tasks = [
+            re.sub(r'^\s*\d+\.\s*', '', line).strip()
+            for line in response.text.strip().split('\n')
+            if re.match(r'^\s*\d+\.\s*', line.strip())
+        ]
+        
+        if not tasks:
+             tasks = [line.strip() for line in response.text.strip().split('\n') if line.strip()]
+             if not tasks:
+                 raise ValueError("A IA não retornou uma lista válida.")
+             
+        return tasks[:6]
+
+    except Exception as e:
+        logging.error(c_red(f"Erro ao gerar lista de tarefas pela IA: {e}"))
+        logging.error(c_red(f"Resposta recebida (truncada): {response.text[:200]}..."))
+        return []
+
+def generate_fix_plan(original_request: str, failed_task: str, error_message: str) -> List[str]:
+    """
+    Usa Gemini para gerar um plano de correção. Máximo 3 tarefas.
+    """
+    global global_dossier
+    dossier_context = json.dumps(global_dossier, indent=2, ensure_ascii=False)
+    
+    os_info = f"SO: {OS_NAME} ({'Android/Pydroid3' if IS_ANDROID else 'Desktop Linux'}). "
+    if IS_ANDROID:
+        os_info += "Use APENAS tipos de ação reconhecidos e prefira 'Executar Comando Shell: pip install [pacote]'. Não use 'apt install'."
+
+    prompt = f"""
+    CONTEXTO: O usuário originalmente pediu: "{original_request}".
+    SO: {os_info}
+    DOSSIÊ ATUAL: {dossier_context}
+    
+    PROBLEMA: A seguinte tarefa falhou:
+    - Tarefa: "{failed_task}"
+    - Mensagem de Erro: "{error_message[:1000]}"
+    
+    INSTRUÇÃO:
+    Analise a tarefa e o erro. Crie um novo plano sequencial e formal de tarefas (em português) para CORRIGIR este problema específico.
+    O plano deve ter no MÁXIMO 3 TAREFAS.
+    Use APENAS os tipos de ação reconhecidos. Se o erro for 'módulo não encontrado', a correção deve ser 'Executar Comando Shell: pip install [módulo]'.
+    
+    Se a falha NÃO PUDER ser corrigida automaticamente, retorne APENAS a palavra VAZIA.
+    
+    Retorne APENAS a lista sequencial das tarefas, numeradas (1., 2., 3., etc.), ou a palavra VAZIA.
+    """
+    
+    try:
+        response = model.generate_content(prompt)
+        text = response.text.strip()
+        
+        if text.upper() == "VAZIA":
+            return []
+            
+        tasks = [
+            re.sub(r'^\s*\d+\.\s*', '', line).strip()
+            for line in text.split('\n')
+            if re.match(r'^\s*\d+\.\s*', line.strip())
+        ]
+             
+        return tasks[:3]
+        
+    except Exception as e:
+        logging.error(c_red(f"   - Erro ao gerar plano de correção: {e}"))
+        logging.error(c_red(f"   - Resposta recebida (truncada): {response.text[:200]}..."))
+        return []
+
+def generate_interactive_question(task: str, result_output: str) -> str:
+    """Gera uma pergunta opcional via Gemini baseada APENAS na tarefa atual e resultado."""
+    global global_dossier
+    dossier_context = json.dumps(global_dossier, indent=2, ensure_ascii=False)
+    
+    prompt = f"""
+    Você é uma IA autônoma e discreta. Analise ESTRICTAMENTE:
+    Tarefa executada: "{task}"
+    Resultado: {result_output[:500]}...
+    DOSSIÊ: {dossier_context}
+    
+    PERGUNTE APENAS SE FOR ESTRICTAMENTE NECESSÁRIO: ex: erro que bloqueia o fluxo e precisa de input do usuário (ambiguidade).
+    NÃO pergunte sobre falhas que você pode tentar corrigir sozinha (como 'comando não encontrado').
+    Em sucessos, erros menores/irrelevantes, ou se puder prosseguir sozinha, NUNCA pergunte – retorne EXATAMENTE "" (string vazia).
+    Se precisar, gere UMA pergunta CURTA e útil em português.
+    Retorne APENAS a pergunta ou "".
+    """
+    try:
+        response = model.generate_content(prompt)
+        question = response.text.strip().replace('"', '')
+        if not question or question.lower() == "vazia" or question.lower() == "não":
+            return ""
+        return question
+    except Exception as e:
+        logging.warning(c_yellow(f"Aviso: Erro ao gerar pergunta interativa: {e}"))
+        return ""
+
+def extract_and_update_dossier(task_description: str, task_output: str):
+    """
+    Usa Gemini para extrair informações chave do output de uma tarefa e atualizar o global_dossier.
+    """
+    global global_dossier
+    
+    dossier_context = json.dumps(global_dossier, indent=2, ensure_ascii=False)
+    
+    prompt = f"""
+    CONTEXTO DA TAREFA: "{task_description}"
+    SAÍDA BRUTA: {task_output[:1000]}
+    
+    DOSSIÊ ATUAL: {dossier_context}
+    
+    INSTRUÇÃO:
+    Analise a SAÍDA BRUTA. Extraia APENAS os fatos mais relevantes (ex: status HTTP, título, resultados DNS, etc.).
+    Gere um objeto JSON que contenha **APENAS** as novas chaves/valores que devem ser adicionadas ou atualizadas no DOSSIÊ ATUAL.
+    As chaves devem ser em minúsculas e concisas, usando underscore (ex: "http_status", "titulo", "dns_registros").
+    
+    Se não houver informação relevante para o dossiê (ex: tarefa de instalação bem-sucedida, mas sem dados), retorne APENAS um objeto JSON vazio: {{}}.
+    NÃO inclua explicações ou texto extra.
+    """
+    
+    try:
+        response = model.generate_content(prompt)
+        json_text = response.text.strip()
+        
+        match = re.search(r"```json\n(.*)```", json_text, re.DOTALL | re.IGNORECASE)
+        if match:
+            json_text = match.group(1).strip()
+            
+        new_data = json.loads(json_text)
+        
+        if new_data:
+            global_dossier.update(new_data)
+            logging.info(f"  - {c_cyan('Dossiê atualizado:')} {', '.join(new_data.keys())} adicionados/atualizados.")
+
+    except json.JSONDecodeError as e:
+        logging.warning(c_yellow(f"Aviso: IA não retornou um JSON válido para o dossiê. Erro: {e}"))
+    except Exception as e:
+        logging.error(c_red(f"Erro ao atualizar o dossiê: {e}"))
+        
+    return
+
+# --- Funções de Verificação e Execução de Comandos ---
+def check_command_exists(command: str) -> bool:
+    """Verifica se um comando existe no PATH (Linux/macOS)."""
+    if IS_ANDROID or IS_LINUX:
+        try:
+            subprocess.run(["which", command], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            return True
+        except subprocess.CalledProcessError:
+            return False
+    else:
+        try:
+            subprocess.run([command, "--version"], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            return True
+        except (subprocess.CalledProcessError, FileNotFoundError):
+            return False
+
+def web_scrape(url: str) -> Tuple[bool, str]:
+    """Faz web scraping de uma URL e retorna um resumo padrão."""
+    try:
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'}
+        response = requests.get(url, headers=headers, timeout=10)
+        response.raise_for_status()
+        
+        soup = BeautifulSoup(response.text, 'html.parser')
+        
+        result_parts = []
+        title = soup.find('title')
+        result_parts.append(f"{c_bold('Título')}: {title.get_text().strip() if title else 'Sem título'}")
+        result_parts.append(f"{c_bold('Status HTTP')}: {c_green(str(response.status_code))}")
+        meta = soup.find('meta', attrs={'name': 'description'})
+        result_parts.append(f"{c_bold('Meta')}: {meta['content'].strip() if meta and meta.get('content') else 'Sem meta'}")
+        h1 = soup.find('h1')
+        result_parts.append(f"{c_bold('H1')}: {h1.get_text().strip() if h1 else 'Sem H1'}")
+        p = soup.find('p')
+        p_text = p.get_text().strip()[:100] + "..." if p and p.get_text().strip() else 'Sem parágrafo'
+        result_parts.append(f"{c_bold('P1')}: {p_text}")
+        result_colored = f" {c_gray('|')} ".join(result_parts)
+        logging.info(f"  - {c_blue('Scraping')}: {result_colored}")
+        
+        clean_result = f"""
+        URL: {url}
+        Título: {title.get_text().strip() if title else 'Sem título'}
+        Status HTTP: {response.status_code}
+        Descrição Meta: {meta['content'].strip() if meta and meta.get('content') else 'Sem meta'}
+        Primeiro H1: {h1.get_text().strip() if h1 else 'N/A'}
+        Conteúdo da página (primeiros 1000 chars): {soup.get_text().strip()[:1000]}
+        """
+        return True, clean_result.strip()
+    except Exception as e:
+        err = f"Erro no scraping de {url}: {e}"
+        logging.error(f"  - {c_red(err)}")
+        return False, str(e)
+
+
+def generate_file(filename: str, content: str) -> Tuple[bool, str]:
+    """Gera arquivo txt com conteúdo e timestamp."""
+    try:
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        full_content = f"Arquivo gerado em {timestamp}\n\n{content}\n\n--- Fim ---"
+        
+        with open(filename, 'w', encoding='utf-8') as f:
+            f.write(full_content)
+        msg = f"Arquivo '{c_yellow(filename)}' criado com sucesso ✅"
+        logging.info(f"  - {c_green(msg)}")
+        return True, f"Arquivo '{filename}' salvo."
+    except Exception as e:
+        err = f"Erro ao criar arquivo '{filename}': {e}"
+        logging.error(f"  - {c_red(err)}")
+        return False, str(e)
+
+def execute_shell_command(command: str) -> Tuple[bool, str]:
+    """Executa um comando shell."""
+    logging.info(f"  - {c_blue('Executando')}: {c_yellow(command)}")
+    try:
+        result = subprocess.run(
+            command, shell=True, executable='/bin/sh', stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            text=True, env=os.environ, timeout=60, encoding='utf-8', errors='ignore'
+        )
+        if result.returncode == 0:
+            out_msg = result.stdout.strip() if result.stdout else "Comando executado sem saída."
+            if out_msg:
+                logging.info(f"  - {c_gray(f'Saída: {out_msg[:200]}...')}")
+            return True, out_msg
+        else:
+            err_msg = result.stderr.strip() if result.stderr else f"Comando falhou com código {result.returncode}"
+            if "command not found" in err_msg or "não encontrado" in err_msg:
+                err_msg = f"Comando '{command.split()[0]}' não encontrado."
+            
+            logging.error(f"  - {c_red(f'Erro: {err_msg}')}")
+            return False, err_msg
+    except Exception as e:
+        err = f"Exceção na execução de '{command}': {e}"
+        logging.error(f"  - {c_red(err)}")
+        return False, str(e)
+
+def execute_python_script(script_code: str) -> Tuple[bool, str]:
+    """
+    Executa um bloco de código Python dinamicamente, salvando em um arquivo temporário.
+    """
+    logging.info(f"  - {c_blue('Executando Script Python')}: {script_code[:50]}...")
+    
+    code_match = re.search(r"```python\n(.*)```", script_code, re.DOTALL | re.IGNORECASE)
+    if code_match:
+        script_to_execute = code_match.group(1).strip()
+    else:
+        script_to_execute = script_code.strip()
+        
+    if not script_to_execute:
+        return False, "A IA não forneceu código Python válido para execução."
+
+    try:
+        temp_filename = os.path.join(tempfile.gettempdir(), f"script_{os.getpid()}_{time.time()}.py")
+        with open(temp_filename, 'w', encoding='utf-8') as f:
+            f.write(script_to_execute)
+    except Exception as e:
+        return False, f"Erro ao criar arquivo temporário: {e}"
+
+    try:
+        result = subprocess.run(
+            [sys.executable, temp_filename],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=60
+        )
+        
+        os.remove(temp_filename)
+        
+        if result.returncode == 0:
+            out_msg = result.stdout.strip() if result.stdout else "Script executado sem saída visual."
+            if out_msg:
+                logging.info(f"  - {c_gray(f'Saída: {out_msg[:200]}...')}")
+            return True, out_msg
+        else:
+            err_msg = result.stderr.strip() if result.stderr else f"Script falhou com código {result.returncode}"
+            logging.error(f"  - {c_red(f'Erro na Execução de Script: {err_msg}')}")
+            if "ModuleNotFoundError" in err_msg:
+                return False, f"ModuleNotFoundError: A biblioteca Python necessária não está instalada. Erro completo: {err_msg}"
+            return False, err_msg
+
+    except Exception as e:
+        if os.path.exists(temp_filename):
+            os.remove(temp_filename)
+        err = f"Exceção na execução de script: {e}"
+        logging.error(f"  - {c_red(err)}")
+        return False, str(e)
+
+
+# --- Funções Principais (Core) ---
+
+def execute_task_with_llm(task_description: str, previous_output: str) -> Tuple[bool, str]:
+    """
+    Executor: Pede à IA para gerar o conteúdo e, em seguida, executa essa ação.
+    """
+    
+    global global_dossier
+    dossier_context = json.dumps(global_dossier, indent=2, ensure_ascii=False)
+    context_injection = f"\n# DOSSIÊ GLOBAL ATUAL:\n{dossier_context}\n"
+    if not global_dossier:
+        context_injection = ""
+    
+    prompt = f"""
+    CONTEXTO: A tarefa a ser executada é: "{task_description}"
+    SAÍDA DA TAREFA ANTERIOR (limite 500 chars): {previous_output[:500]}
+    {context_injection}
+    
+    INSTRUÇÃO:
+    Gere APENAS o COMANDO SHELL, URL, CONTEÚDO DE ARQUIVO, NOME DO COMANDO ou BLOCO DE CÓDIGO PYTHON (dentro de ```python\n...\n```) necessário para a tarefa.
+
+    Regras de Retorno (Baseadas no tipo de tarefa):
+    1. Executar Comando Shell: Retorne APENAS o comando (ex: pip install requests).
+    2. Realizar Varredura Web: Retorne APENAS a URL.
+    3. Executar Script Python: Retorne APENAS o bloco de código Python.
+    4. Gerar Arquivo: Retorne APENAS o conteúdo do arquivo.
+    5. Verificar Comando: Retorne APENAS o nome do comando.
+    6. Análise Lógica: Retorne APENAS o resultado da sua análise (em texto).
+    
+    Retorne APENAS o conteúdo que será processado, sem aspas, explicações ou texto extra.
+    """
+    
+    try:
+        response = model.generate_content(prompt)
+        action_content = response.text.strip()
+        
+        action_type = task_description.lower().split(':')[0].strip()
+
+        # Dispatcher de Tipos Rígidos
+        if action_type in ["realizar varredura web", "analisar site", "varrer site"]:
+            url = action_content.split()[0].replace('[', '').replace(']', '')
+            if not url.startswith(('http://', 'https://')):
+                url = 'https://' + url
+            return web_scrape(url)
+        
+        elif action_type == "executar script python":
+            return execute_python_script(action_content)
+
+        elif action_type == "gerar arquivo":
+            match = re.search(r'arquivo:\s*([\w\-\.]+)', task_description, re.IGNORECASE)
+            filename = match.group(1).strip() if match else "output_gerado.txt"
+            return generate_file(filename, action_content)
+            
+        elif action_type == "verificar comando":
+            command = action_content.split()[0]
+            exists = check_command_exists(command)
+            msg = f"Verificação de comando: '{c_yellow(command)}' {'existe ' + c_green('✅') if exists else 'NÃO existe ' + c_red('❌')}"
+            logging.info(f"  - {msg}")
+            return True, msg
+            
+        elif action_type in ["executar comando shell", "executar comando"]:
+            return execute_shell_command(action_content)
+        
+        elif action_type == "análise lógica":
+            msg = f"Análise concluída. Resultado: {action_content[:200]}..."
+            logging.info(f"  - {c_green(msg)}")
+            return True, action_content
+            
+        else:
+            logging.warning(f"  - {c_yellow(f'Aviso: Tipo "{action_type}" não reconhecido. Tratando como Análise Lógica.')}")
+            return True, action_content
+
+
+    except Exception as e:
+        err = f"Erro na etapa de execução LLM para a tarefa '{task_description}': {e}"
+        logging.error(f"  - {c_red(err)}")
+        return False, str(e)
+
+
+def execute_task(task: str, previous_output: str) -> Tuple[bool, str]:
+    """
+    Dispatcher: Envia a tarefa para o executor e atualiza o dossiê em caso de sucesso.
+    """
+    success, output = execute_task_with_llm(task, previous_output)
+    
+    if success:
+        extract_and_update_dossier(task, output)
+        
+    return success, output
+
+
+def handle_pause_interaction(task: str, result_output: str, last_known_output: str) -> str:
+    """
+    Gerencia pausa: Gemini decide se pergunta (ou usuário intervém).
+    """
+    
+    stop_commands = ['encerrar', 'parar', 'cancelar', 'stop', 'quit', 'sair']
+    
+    question = generate_interactive_question(task, result_output)
+    
+    if question:
+        prompt_text = (
+            f"🛑 {c_yellow(c_bold(question))}\n"
+            f"{c_yellow('Sua resposta (ou "parar" para cancelar): ')}"
+        )
+    else:
+        prompt_text = (
+            f"🛑 {c_red(c_bold('A IA não conseguiu corrigir.'))}\n"
+            f"{c_yellow('Digite um comando para corrigir, "parar" para cancelar, ou ENTER para pular:')} "
+        )
+
+    user_response = input(f"\n{prompt_text}").strip()
+
+    if user_response.lower() in stop_commands:
+        logging.info(f"   - {c_yellow('Usuário solicitou parada.')}")
+        return "stop"
+
+    if user_response.lower() in ('continuar', 'c', ''):
+        logging.info("   - Usuário decidiu pular/continuar.")
+        return "continue"
+    
+    print(f"\n{c_cyan('🔄 Processando intervenção do usuário...')}")
+    sub_todo = generate_todo_list(user_response)
+    
+    sub_output = last_known_output
+    for sub_task in sub_todo:
+        print(f"  {c_gray('Sub-tarefa:')} {sub_task}")
+        success, sub_output_msg = execute_task(sub_task, sub_output)
+        if success:
+            sub_output = sub_output_msg
+            logging.info(f"    {c_green('✅')} {sub_output[:150]}...")
+        else:
+            logging.warning(f"    {c_red('❌')} {sub_output_msg[:150]}...")
+        time.sleep(1)
+    
+    print(f"{c_cyan('Intervenção finalizada. Continuando...')}")
+    return "sub_task_executed"
+
+
+def main():
+    global global_dossier
+    
+    # --- NOVO: Pyfiglet ASCII Art ---
+    try:
+        figlet_text = pyfiglet.figlet_format("GEMINUS")
+        print(c_blue(figlet_text))
+    except Exception as e:
+        print(c_red(f"Erro ao gerar ASCII art com pyfiglet: {e}"))
+        print(c_blue("GEMINUS")) # Fallback
+    # ---------------------------------
+    
+    print(c_bold(c_blue(f"🤖 Assistente IA Autônomo"))) # Mensagem inicial simplificada
+    print(c_gray(f"SO: {OS_NAME} ({'Android' if IS_ANDROID else 'Desktop'}) | Log de debug: assistente.log"))
+    print(f"Digite {c_yellow('sair')} para parar. Digite {c_yellow('dossie')} para ver o contexto atual.")
+    
+    last_task_output = ""
+
+    while True:
+        try:
+            original_user_request = input(f"\n{c_bold(c_cyan('> '))}")
+        except EOFError:
+            print(c_yellow("\nSaindo..."))
+            break
+        except KeyboardInterrupt:
+            print(c_yellow("\nSaindo..."))
+            break
+
+
+        if original_user_request.lower() == 'sair':
+            print(c_yellow("Até mais!"))
+            break
+        
+        if original_user_request.lower() == 'dossie':
+            print(c_bold(c_blue("\n--- DOSSIÊ GLOBAL DE CONTEXTO ---")))
+            if global_dossier:
+                print(json.dumps(global_dossier, indent=2, ensure_ascii=False))
+            else:
+                print(c_gray("Dossiê vazio."))
+            print(c_bold(c_blue("---------------------------------")))
+            continue
+        
+        if not original_user_request:
+            continue
+        
+        global_dossier = {} 
+            
+        # --- MENSAGEM SIMPLIFICADA ---
+        print(f"\n{c_bold('📝 Analisando Tarefa...')}")
+        logging.info(f"--- Pedido: {original_user_request} ---")
+        # -----------------------------
+        
+        todo_list = generate_todo_list(original_user_request)
+        
+        if not todo_list:
+            logging.error(c_red("Não foi possível gerar uma lista de tarefas. Tente novamente."))
+            continue
+            
+        print(f"{c_green('Plano gerado')} ({len(todo_list)} tarefas):")
+        for i, task in enumerate(todo_list, 1):
+            print(f"  {c_gray(f'{i}.')} {task}")
+        
+        print(f"\n{c_bold(c_blue('🚀 Executando plano...'))}\n" + c_gray("-" * 40))
+        
+        completed = 0
+        task_index = 0
+        was_interrupted = False
+        
+        # --- LOOP 'WHILE' PARA AUTO-CORREÇÃO ---
+        while task_index < len(todo_list):
+            try:
+                task = todo_list[task_index]
+                print(f"📋 {c_bold(f'Tarefa {task_index + 1}/{len(todo_list)}:')} {task}")
+                
+                success, output = execute_task(task, last_task_output)
+                
+                if success:
+                    completed += 1
+                    last_task_output = output
+                    print(f"   {c_green('✅ Concluída!')}")
+                    task_index += 1
+                    time.sleep(1)
+                    print(c_gray("-" * 40))
+                    continue
+
+                print(f"   {c_red('❌ Falhou.')} {c_gray(f'Erro: {output[:100]}...')}")
+                
+                print(f"\n{c_yellow(c_bold('🧠 Analisando falha e tentando corrigir...'))}")
+                
+                fix_plan = generate_fix_plan(original_user_request, task, output)
+
+                if not fix_plan:
+                    print(c_yellow("   - IA analisou o erro e decidiu que não é corrigível automaticamente."))
+                    signal = handle_pause_interaction(task, output, last_task_output)
+                    if signal == "stop":
+                        was_interrupted = True
+                        break
+                    
+                    task_index += 1
+                    print(c_gray("-" * 40))
+                    continue
+
+                print(f"{c_yellow('   - IA gerou um plano de correção:')}")
+                for i, fix_task in enumerate(fix_plan, 1):
+                    print(f"     {c_gray(f'FIX {i}.')} {fix_task}")
+
+                fix_success = True
+                fix_plan_output = last_task_output
+                for fix_task in fix_plan:
+                    print(f"   {c_cyan('Executando correção:')} {fix_task}")
+                    success_fix, output_fix = execute_task(fix_task, fix_plan_output)
+                    if success_fix:
+                        fix_plan_output = output_fix
+                        print(f"     {c_green('✅ Correção aplicada.')}")
+                    else:
+                        print(f"     {c_red('❌ Correção falhou.')}")
+                        fix_plan_output = output_fix
+                        fix_success = False
+                        break
+
+                if fix_success:
+                    print(c_green("   - Plano de correção concluído. Tentando novamente a tarefa original..."))
+                    last_task_output = fix_plan_output
+                else:
+                    print(c_red("   - Falha ao executar o plano de correção da IA."))
+                    signal = handle_pause_interaction(task, fix_plan_output, last_task_output)
+                    if signal == "stop":
+                        was_interrupted = True
+                        break
+                    
+                    task_index += 1
+
+                time.sleep(1)
+                print(c_gray("-" * 40))
+
+            except KeyboardInterrupt:
+                print(c_yellow("\n\nExecução interrompida pelo usuário (Ctrl+C)."))
+                was_interrupted = True
+                break
+        
+        # --- Fim do loop while ---
+        print(c_gray("=" * 40))
+        
+        if was_interrupted:
+            print(f"\n{c_yellow(c_bold('🟡 Execução interrompida pelo usuário.'))} {completed}/{len(todo_list)} tarefas concluídas.")
+        else:
+            print(f"\n{c_green(c_bold('🎉 Execução finalizada!'))} {completed}/{len(todo_list)} tarefas concluídas.")
+        
+if __name__ == "__main__":
+    main()
