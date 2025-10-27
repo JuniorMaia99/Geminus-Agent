@@ -14,6 +14,31 @@ Geminus consegue executar blocos de código python sozinho para concluir uma tar
 
 (Mais informações Em Breve)
 
+## Como utilizar
+para utilizar o Geminus você vai precisar do **Python 3** você pode baixar o python diretamente pelo site oficial.
+
+as bibliotecas necessárias são:
+1. google-generativeai
+2. colorama
+3. bs4
+4. requests
+5. platform
+6. logging
+7. os
+8. json
+9. subprocess
+10. sys
+11. tempfile
+a maioria são pré-instaladas, mas vale a pena tentar instalar cada uma.
+
+Depois de instalar todas as dependências necessárias, baixe o arquivo correspondente com seu Sistema Operacional (ex: Windows) e colar em um arquivo, antes de executar o arquivo, coloque sua chave API do Gemini aonde está escrito "YOUR-API-KEY", se você não sabe como conseguir a API, basta acessar o Google Ai Studio, lá você pode obter sua API.
+
+Após colocar sua API, execute o arquivo do Geminus, ex:
+```
+python3 Geminus-Windows.py
+```
+após isso, o Geminus está pronto para executar suas tarefas.
+
 ## Tecnologias
 - Python
 
