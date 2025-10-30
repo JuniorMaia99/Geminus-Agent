@@ -14,6 +14,18 @@ Geminus consegue executar blocos de código python sozinho para concluir uma tar
 
 (Mais informações Em Breve)
 
+## Futuras Capacidades
+O Geminus ainda tem muito a melhorar, pra isso, estou atualizando muita coisa, algumas das futuras atualizações incluem:
+
+1. Geminus Studio
+2. Modo Livre & Modo Ambiente
+3. Navegação por diretórios
+4. Ler arquivos específicos
+5. Rollback caso algum arquivo tenha falha durante alteração
+6. Escolha de limite de tarefas & modo infinito de tarefas
+
+Em Breve mostrarei mais atualizações futuras pra vocês.
+
 ## Como utilizar
 para utilizar o Geminus você vai precisar do **Python 3** você pode baixar o python diretamente pelo site oficial.
 
@@ -29,6 +41,7 @@ as bibliotecas necessárias são:
 9. subprocess
 10. sys
 11. tempfile
+
 a maioria são pré-instaladas, mas vale a pena tentar instalar cada uma.
 
 Depois de instalar todas as dependências necessárias, baixe o arquivo correspondente com seu Sistema Operacional (ex: Windows) e colar em um arquivo, antes de executar o arquivo, coloque sua chave API do Gemini aonde está escrito "YOUR-API-KEY", se você não sabe como conseguir a API, basta acessar o Google Ai Studio, lá você pode obter sua API.
