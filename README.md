@@ -18,10 +18,15 @@ Geminus consegue executar blocos de código python sozinho para concluir uma tar
 O Geminus ainda tem muito a melhorar, pra isso, estou atualizando muita coisa, algumas das futuras atualizações incluem:
 
 [ ] Geminus Studio
+
 [ ] Modo Livre & Modo Ambiente
+
 [X] Navegação por diretórios
+
 [X] Ler arquivos específicos
+
 [ ] Rollback caso algum arquivo tenha falha durante alteração
+
 [ ] Escolha de limite de tarefas & modo infinito de tarefas
 
 Em Breve mostrarei mais atualizações futuras pra vocês.
